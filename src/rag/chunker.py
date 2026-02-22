@@ -2,9 +2,11 @@
 
 Parent(Section 단위)와 Child(~400 tokens) 청크를 생성하고,
 ParentDocumentRetriever를 통해 검색 시 부모 문맥을 함께 반환한다.
-부모 문서는 LocalFileStore에 영속 저장되어 서버 재시작 후에도 유지된다.
+부모 문서는 DocumentFileStore를 통해 JSON 직렬화하여 영속 저장된다.
 """
 
+import json
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from langchain_chroma import Chroma
@@ -14,9 +16,59 @@ from langchain_classic.retrievers.parent_document_retriever import (
 from langchain_classic.storage import LocalFileStore
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+from langchain_core.stores import BaseStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.rag.parser import ParsedElement
+
+# ── Document 직렬화 저장소 ─────────────────────────────────────────────
+
+
+class DocumentFileStore(BaseStore[str, Document]):
+    """LocalFileStore(bytes)를 감싸 Document 객체를 JSON으로 직렬화/역직렬화하는 래퍼.
+
+    ParentDocumentRetriever의 docstore는 BaseStore[str, Document]를 기대하지만,
+    LocalFileStore는 BaseStore[str, bytes]이므로 이 래퍼로 타입을 맞춘다.
+    """
+
+    def __init__(self, file_store: LocalFileStore) -> None:
+        self._store = file_store
+
+    def mget(self, keys: Sequence[str]) -> list[Document | None]:
+        raw_values = self._store.mget(list(keys))
+        results: list[Document | None] = []
+        for raw in raw_values:
+            if raw is None:
+                results.append(None)
+            else:
+                data = json.loads(raw.decode("utf-8"))
+                results.append(
+                    Document(
+                        page_content=data["page_content"],
+                        metadata=data.get("metadata", {}),
+                    )
+                )
+        return results
+
+    def mset(self, key_value_pairs: Sequence[tuple[str, Document]]) -> None:
+        serialized = [
+            (
+                k,
+                json.dumps(
+                    {"page_content": v.page_content, "metadata": v.metadata},
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+            )
+            for k, v in key_value_pairs
+        ]
+        self._store.mset(serialized)
+
+    def mdelete(self, keys: Sequence[str]) -> None:
+        self._store.mdelete(list(keys))
+
+    def yield_keys(self, *, prefix: str | None = None) -> Iterator[str]:
+        yield from self._store.yield_keys(prefix=prefix)
+
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 
@@ -35,7 +87,9 @@ PARENT_CHUNK_OVERLAP = 400
 # ── 헬퍼 함수 ─────────────────────────────────────────────────────────
 
 
-def elements_to_documents(elements: list[ParsedElement], pdf_name: str) -> list[Document]:
+def elements_to_documents(
+    elements: list[ParsedElement], pdf_name: str
+) -> list[Document]:
     """ParsedElement 리스트를 LangChain Document 리스트로 변환
 
     Args:
@@ -96,11 +150,11 @@ def create_parent_document_retriever(
         chunk_overlap=CHILD_CHUNK_OVERLAP,
     )
 
-    file_store = LocalFileStore(str(parent_store_path))
+    doc_store = DocumentFileStore(LocalFileStore(str(parent_store_path)))
 
     retriever = ParentDocumentRetriever(
         vectorstore=vectorstore,
-        docstore=file_store,
+        docstore=doc_store,  # type: ignore[arg-type]
         child_splitter=child_splitter,
         parent_splitter=parent_splitter,
     )

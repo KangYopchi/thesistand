@@ -1,11 +1,16 @@
 """LangGraph StateGraph 워크플로우 구성 모듈
 
-논문 분석 에이전트의 전체 흐름을 정의한다:
-Ingest → Parallel(Local_Retriever + Web_Searcher) → Vision_Router
-  → (조건부) Vision_Analyst → Synthesis
+Ingest(논문 저장)와 Query(질문 처리)를 별도 그래프로 분리한다.
+
+- Ingest Graph: PDF 업로드 시 1회 실행
+  START → ingest → END
+
+- Query Graph: 질문마다 실행, 병렬 처리 및 스트리밍 최적화
+  START → (local_retriever ∥ web_searcher) → vision_router → (조건부) vision_analyst → synthesis → END
 """
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from src.agents.nodes import (
     ingest_node,
@@ -19,16 +24,33 @@ from src.agents.nodes import (
 from src.agents.state import AgentState
 
 
-def build_graph() -> StateGraph:
-    """논문 분석 에이전트 그래프를 생성하고 컴파일
+def build_ingest_graph() -> CompiledStateGraph:
+    """PDF 파싱 및 벡터DB 저장을 담당하는 인제스트 그래프 생성
 
     Returns:
         컴파일된 LangGraph 실행 가능 그래프
     """
-    graph = StateGraph(AgentState)
+    graph = StateGraph(AgentState)  # type: ignore[type-var]
+
+    graph.add_node("ingest", ingest_node)
+
+    graph.add_edge(START, "ingest")
+    graph.add_edge("ingest", END)
+
+    return graph.compile()
+
+
+def build_query_graph() -> CompiledStateGraph:
+    """질문 처리를 담당하는 쿼리 그래프 생성
+
+    병렬 검색(local_retriever ∥ web_searcher) → 비전 판단 → 합성 순서로 실행한다.
+
+    Returns:
+        컴파일된 LangGraph 실행 가능 그래프
+    """
+    graph = StateGraph(AgentState)  # type: ignore[type-var]
 
     # ── 노드 등록 ────────────────────────────────────────────────────
-    graph.add_node("ingest", ingest_node)
     graph.add_node("local_retriever", local_retriever_node)
     graph.add_node("web_searcher", web_searcher_node)
     graph.add_node("vision_router", vision_router_node)
@@ -37,14 +59,11 @@ def build_graph() -> StateGraph:
 
     # ── 엣지 정의 ────────────────────────────────────────────────────
 
-    # START → ingest
-    graph.add_edge(START, "ingest")
+    # START → 병렬 검색 (fan-out)
+    graph.add_edge(START, "local_retriever")
+    graph.add_edge(START, "web_searcher")
 
-    # ingest → 병렬 연구 (fan-out)
-    graph.add_edge("ingest", "local_retriever")
-    graph.add_edge("ingest", "web_searcher")
-
-    # 병렬 연구 완료 → vision_router (fan-in)
+    # 병렬 검색 완료 → vision_router (fan-in)
     graph.add_edge("local_retriever", "vision_router")
     graph.add_edge("web_searcher", "vision_router")
 
@@ -58,14 +77,8 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # vision_analyst → synthesis
+    # vision_analyst → synthesis → END
     graph.add_edge("vision_analyst", "synthesis")
-
-    # synthesis → END
     graph.add_edge("synthesis", END)
 
     return graph.compile()
-
-
-# 컴파일된 그래프 인스턴스 (import하여 사용)
-app = build_graph()

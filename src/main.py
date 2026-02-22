@@ -3,8 +3,9 @@
 PDF 업로드, 질문 응답, 스트리밍 응답 엔드포인트를 제공한다.
 """
 
+import hashlib
+import json
 import logging
-import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -13,10 +14,10 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.agents.graph import build_graph
+from src.agents.graph import build_ingest_graph, build_query_graph
 from src.rag.vectorstore import get_embeddings, get_vectorstore
 
 load_dotenv()
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 PDF_DIR = DATA_DIR / "pdfs"
+IMAGE_DIR = DATA_DIR / "images"
 
 
 # ── Pydantic 모델 ────────────────────────────────────────────────────
@@ -34,7 +36,7 @@ PDF_DIR = DATA_DIR / "pdfs"
 
 class AskRequest(BaseModel):
     question: str
-    pdf_path: str
+    pdf_hash: str
 
 
 class AskResponse(BaseModel):
@@ -44,7 +46,8 @@ class AskResponse(BaseModel):
 
 class IngestResponse(BaseModel):
     message: str
-    pdf_path: str
+    pdf_hash: str
+    status: str  # "created" | "already_exists"
     page_count: int
 
 
@@ -55,6 +58,7 @@ class IngestResponse(BaseModel):
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """애플리케이션 시작/종료 시 벡터스토어 초기화"""
     PDF_DIR.mkdir(parents=True, exist_ok=True)
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("벡터스토어 초기화 중...")
     get_vectorstore(embeddings=get_embeddings())
     logger.info("서버 준비 완료")
@@ -83,39 +87,64 @@ app.add_middleware(
 # ── 엔드포인트 ───────────────────────────────────────────────────────
 
 
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
+
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest_pdf(file: UploadFile) -> IngestResponse:
     """PDF 파일을 업로드하고 인제스트 수행
 
-    PDF를 data/pdfs/에 저장한 후 LlamaParse 파싱 및
-    벡터DB 저장을 실행한다.
+    파일 SHA-256 해시를 계산하여 data/pdfs/{hash}.pdf로 저장한다.
     """
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다.")
 
-    # PDF 저장
-    pdf_path = PDF_DIR / file.filename
-    with pdf_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # 파일 읽기 + 해시 계산
+    file_bytes = await file.read()
+    pdf_hash = hashlib.sha256(file_bytes).hexdigest()
 
+    # ── 중복 확인: 이미지 폴더가 존재하면 재파싱 없이 즉시 반환 ─────────
+    image_dir = IMAGE_DIR / pdf_hash
+    existing_images = sorted(image_dir.glob("page_*.png")) if image_dir.exists() else []
+    if existing_images:
+        logger.info("중복 업로드 감지: %s", pdf_hash)
+        return IngestResponse(
+            message=f"{file.filename} 이미 처리된 논문입니다.",
+            pdf_hash=pdf_hash,
+            status="already_exists",
+            page_count=len(existing_images),
+        )
+
+    # ── 신규: PDF 저장 후 인제스트 실행 ──────────────────────────────
+    pdf_path = PDF_DIR / f"{pdf_hash}.pdf"
+    pdf_path.write_bytes(file_bytes)
     logger.info("PDF 저장 완료: %s", pdf_path)
 
-    # 인제스트 그래프 실행 (ingest_node만 필요)
-    graph = build_graph()
-    result = await graph.ainvoke({
-        "question": "",
-        "pdf_path": str(pdf_path),
-        "contexts": [],
-        "image_paths": {},
-        "vision_result": "",
-        "final_answer": "",
-    })
+    graph = build_ingest_graph()
+    result = await graph.ainvoke(
+        {
+            "question": "",
+            "pdf_hash": pdf_hash,
+            "image_dir": "",
+            "contexts": [],
+            "vision_result": None,
+            "final_answer": "",
+        }
+    )
 
-    page_count = len(result.get("image_paths", {}))
+    result_image_dir = Path(result.get("image_dir", ""))
+    page_count = (
+        len(list(result_image_dir.glob("page_*.png")))
+        if result_image_dir.exists()
+        else 0
+    )
 
     return IngestResponse(
         message=f"{file.filename} 인제스트 완료",
-        pdf_path=str(pdf_path),
+        pdf_hash=pdf_hash,
+        status="created",
         page_count=page_count,
     )
 
@@ -126,22 +155,24 @@ async def ask_question(request: AskRequest) -> AskResponse:
 
     전체 LangGraph 워크플로우를 실행하여 최종 답변을 반환한다.
     """
-    pdf_path = Path(request.pdf_path)
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF 파일을 찾을 수 없습니다.")
+    image_dir = IMAGE_DIR / request.pdf_hash
+    if not image_dir.exists():
+        raise HTTPException(status_code=404, detail="해당 논문을 찾을 수 없습니다.")
 
-    graph = build_graph()
-    result = await graph.ainvoke({
-        "question": request.question,
-        "pdf_path": str(pdf_path),
-        "contexts": [],
-        "image_paths": {},
-        "vision_result": "",
-        "final_answer": "",
-    })
+    graph = build_query_graph()
+    result = await graph.ainvoke(
+        {
+            "question": request.question,
+            "pdf_hash": request.pdf_hash,
+            "image_dir": str(image_dir),
+            "contexts": [],
+            "vision_result": None,
+            "final_answer": "",
+        }
+    )
 
-    vision_result = result.get("vision_result", "")
-    if vision_result in ("NEED_VISION", "NO_VISION", ""):
+    vision_result = result.get("vision_result")
+    if vision_result in ("NEED_VISION", "NO_VISION", "", None):
         vision_result = None
 
     return AskResponse(
@@ -157,34 +188,34 @@ async def ask_question_stream(request: AskRequest) -> StreamingResponse:
     LangGraph의 astream_events를 활용하여 각 노드의
     진행 상황을 실시간으로 전달한다.
     """
-    pdf_path = Path(request.pdf_path)
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF 파일을 찾을 수 없습니다.")
+    image_dir = IMAGE_DIR / request.pdf_hash
+    if not image_dir.exists():
+        raise HTTPException(status_code=404, detail="해당 논문을 찾을 수 없습니다.")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        graph = build_graph()
+        graph = build_query_graph()
         initial_state = {
             "question": request.question,
-            "pdf_path": str(pdf_path),
+            "pdf_hash": request.pdf_hash,
+            "image_dir": str(image_dir),
             "contexts": [],
-            "image_paths": {},
-            "vision_result": "",
+            "vision_result": None,
             "final_answer": "",
         }
 
+        # astream_events 한 번으로 노드 이벤트 + 최종 답변 모두 처리
+        final_answer = ""
         async for event in graph.astream_events(initial_state, version="v2"):
             kind = event.get("event", "")
             name = event.get("name", "")
 
             if kind == "on_chain_start":
-                yield f"data: {{\"event\": \"node_start\", \"node\": \"{name}\"}}\n\n"
+                yield f"data: {json.dumps({'event': 'node_start', 'node': name}, ensure_ascii=False)}\n\n"
             elif kind == "on_chain_end":
-                yield f"data: {{\"event\": \"node_end\", \"node\": \"{name}\"}}\n\n"
-
-        # 최종 결과 전송
-        result = await graph.ainvoke(initial_state)
-        final_answer = result.get("final_answer", "")
-        import json
+                output = event.get("data", {}).get("output", {})
+                if isinstance(output, dict) and output.get("final_answer"):
+                    final_answer = output["final_answer"]
+                yield f"data: {json.dumps({'event': 'node_end', 'node': name}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'event': 'final_answer', 'answer': final_answer}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"

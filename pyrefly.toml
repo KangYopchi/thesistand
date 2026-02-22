@@ -1,0 +1,17 @@
+search-path = ["src", ".", "utils"]
+project-includes = ["src", "utils"]
+
+
+[errors]
+unsupported-operation = false 
+bad-typed-dict-key = false
+no-matching-overload = false
+
+[exclude]
+# 표준 라이브러리 stub 파일 제외
+"**/types.pyi" = true
+"**/builtins.pyi" = true
+"**/pyrefly_bundled_typeshed*/**" = true
+
+# 표준 라이브러리 경로 제외 (Python 설치 경로에 따라 다름)
+"/Library/Frameworks/Python.framework/**" = true

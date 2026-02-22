@@ -9,7 +9,7 @@
 Python 3.12+, LangGraph (Async), FastAPI, uv, ChromaDB, LlamaParse, OpenAI GPT-5o (Vision)
 
 ## 빠른 명령어
-- 실행: `uv run python src/main.py`
+- 실행: `PYTHONPATH=. uv run python src/main.py`
 - 테스트: `pytest`
 - 린트: `ruff check . --fix`
 - 의존성: `uv add [package]` / `uv sync`

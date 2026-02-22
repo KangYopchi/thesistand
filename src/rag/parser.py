@@ -54,14 +54,14 @@ async def parse_pdf_with_llamaparse(pdf_path: Path | str) -> list[dict]:
     )
 
     pdf_path = Path(pdf_path)
-    json_result = await parser.aget_json(str(pdf_path))
+    json_result: list[dict] = await parser.aget_json(str(pdf_path))
 
     return json_result
 
 
 def extract_elements_with_page_numbers(json_result: list[dict]) -> list[ParsedElement]:
     """
-    JSON 결과에서 텍스트와 page_number 추출
+    json 결과에서 텍스트와 page_number 추출
 
     Args:
         json_result: LlamaParse JSON 결과
@@ -146,10 +146,13 @@ async def parse_pdf(pdf_path: Path | str) -> ParseResult:
     pdf_path = Path(pdf_path)
 
     # 병렬로 LlamaParse 파싱과 이미지 생성 실행
-    json_result, page_images = await asyncio.gather(
+    gathered: tuple[list[dict], dict[int, Path]] = await asyncio.gather(
         parse_pdf_with_llamaparse(pdf_path),
         generate_page_images(pdf_path),
     )
+
+    # unwrap the gathered tuple, type hinting is not needed and working in 3.12.12
+    json_result, page_images = gathered
 
     elements = extract_elements_with_page_numbers(json_result)
 
@@ -180,7 +183,9 @@ async def main() -> None:
 
     print("\n=== 처음 5개 요소 ===")
     for elem in result["elements"][:5]:
-        text_preview = elem["text"][:50] + "..." if len(elem["text"]) > 50 else elem["text"]
+        text_preview = (
+            elem["text"][:50] + "..." if len(elem["text"]) > 50 else elem["text"]
+        )
         print(f"  [p.{elem['page_number']}] ({elem['element_type']}) {text_preview}")
 
     print("\n=== 생성된 이미지 ===")
