@@ -211,7 +211,7 @@ async def vision_router_node(state: AgentState) -> dict:
 
     # ── 2단계: contexts 메타데이터 확인 (LLM 호출 없음) ───────────────
     has_visual_element = any(
-        chunk.get("element_type") in ("table", "image") for chunk in contexts
+        chunk.get("element_type") in ("table", "image", "figure") for chunk in contexts
     )
     if has_visual_element:
         logger.info("비전 라우팅: 2단계 메타데이터 매칭 → NEED_VISION")
@@ -260,8 +260,9 @@ def route_vision(state: AgentState) -> str:
 async def vision_analyst_node(state: AgentState) -> dict:
     """페이지 이미지를 gpt-5-mini Vision으로 분석하는 노드
 
-    image_dir에서 contexts의 element_type이 "table"/"image"인 페이지를
-    우선 로드한다. 해당 페이지가 없으면 전체 이미지 중 최대 5개를 사용한다.
+    local_rag 검색 결과의 페이지 번호를 기준으로 ±1 페이지를 후보로 선정한다.
+    그림/표는 텍스트 참조 페이지의 앞뒤에 위치하는 경우가 많기 때문이다.
+    검색 결과가 없으면 전체 이미지 중 최대 5개를 사용한다.
 
     Returns:
         vision_result에 분석 텍스트 설정
@@ -280,24 +281,29 @@ async def vision_analyst_node(state: AgentState) -> dict:
         logger.warning("이미지 폴더 없음: %s", image_dir_path)
         return {"vision_result": "이미지가 없어 시각적 분석을 수행할 수 없습니다."}
 
-    # contexts에서 시각적 요소(table/image)의 page_number 추출
-    visual_pages = sorted(
-        {
-            chunk["page_number"]
-            for chunk in contexts
-            if chunk.get("element_type") in ("table", "image")
-            and chunk.get("page_number")
-        }
-    )
+    # local_rag 검색 결과의 페이지 번호를 기준으로 후보 페이지 결정.
+    # 그림/표는 텍스트 참조 페이지의 앞뒤에 위치하는 경우가 많으므로 ±1 확장.
+    ref_pages = {
+        chunk["page_number"]
+        for chunk in contexts
+        if chunk.get("source") == "local_rag" and chunk.get("page_number")
+    }
 
-    if visual_pages:
-        # 관련 페이지만 선택적으로 로드 (최대 5개)
-        candidate_paths = [
-            image_dir_path / f"page_{p:03d}.png" for p in visual_pages[:5]
-        ]
+    if ref_pages:
+        expanded: set[int] = set()
+        for p in ref_pages:
+            expanded.update([p - 1, p, p + 1])
+        visual_pages = sorted(p for p in expanded if p > 0)[:5]
     else:
-        # 시각적 요소가 명시되지 않은 경우 전체 중 최대 5개
-        candidate_paths = sorted(image_dir_path.glob("page_*.png"))[:5]
+        # 검색 결과가 없으면 전체 이미지 중 최대 5개
+        all_pages = sorted(image_dir_path.glob("page_*.png"))
+        visual_pages = [
+            int(p.stem.split("_")[1]) for p in all_pages[:5]
+        ]
+
+    candidate_paths = [
+        image_dir_path / f"page_{p:03d}.png" for p in visual_pages
+    ]
 
     image_paths_to_analyze = [p for p in candidate_paths if p.exists()]
 

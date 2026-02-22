@@ -102,11 +102,20 @@ def elements_to_documents(
     documents: list[Document] = []
 
     for elem in elements:
-        if not elem["text"].strip():
-            continue
+        text = elem["text"].strip()
+
+        if not text:
+            # 이미지/그림/표 element는 텍스트가 없어도 placeholder로 저장.
+            # 버리면 벡터DB에 시각 요소 기록이 전혀 남지 않는다.
+            if elem["element_type"] in ("image", "figure"):
+                text = f"[그림 - 페이지 {elem['page_number']}]"
+            elif elem["element_type"] == "table":
+                text = f"[표 - 페이지 {elem['page_number']}]"
+            else:
+                continue
 
         doc = Document(
-            page_content=elem["text"],
+            page_content=text,
             metadata={
                 "source": pdf_name,
                 "page_number": elem["page_number"],
