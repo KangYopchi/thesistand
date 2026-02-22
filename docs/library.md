@@ -1,9 +1,12 @@
 uv add fastapi uvicorn langgraph langchain-openai python-dotenv
 uv add llama-parse pdf2image chromadb  # RAG와 이미지 관련
 
+uv sync --extra dev 
+uv sync --extra test
 
 
-thesistand/
+
+git remote add origin https://github.com/KangYopchi/thesistand.git/
 ├── .venv/              # uv가 관리하는 가상환경
 ├── data/               # 분석된 PDF, 이미지, DB가 저장되는 곳 (Persistence)
 │   ├── pdfs/
