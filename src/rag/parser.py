@@ -151,7 +151,7 @@ async def parse_pdf(pdf_path: Path | str) -> ParseResult:
         generate_page_images(pdf_path),
     )
 
-    # unwrap the gathered tuple, type hinting is not needed and working in 3.12.12
+    # gathered tuple을 언팩한다. 두 변수에 대한 type hinting은 3.12.12 버전에서 작동하지 않으므로 명시하지 않는다.
     json_result, page_images = gathered
 
     elements = extract_elements_with_page_numbers(json_result)
