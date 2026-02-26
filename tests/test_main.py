@@ -154,3 +154,92 @@ class TestAskEndpoint:
 
         data = response.json()
         assert data["vision_result"] == "테이블 분석 결과"
+
+
+class TestAskEndpointWithRegistry:
+    """POST /ask — pdf_hash=None 시 레지스트리 조회 시나리오"""
+
+    def test_returns_404_when_registry_empty(self, client: TestClient) -> None:
+        """/ask에 pdf_hash 없이 요청 + 레지스트리 비어있음 → 404"""
+        with patch("src.main.registry") as mock_registry:
+            mock_registry.get_latest.return_value = None
+            response = client.post("/ask", json={"question": "질문"})
+        assert response.status_code == 404
+        assert "인제스트된 문서가 없습니다" in response.json()["detail"]
+
+    @patch("src.main.build_query_graph")
+    def test_uses_latest_when_no_hash_provided(
+        self, mock_build_graph: MagicMock, client: TestClient, tmp_path: Path
+    ) -> None:
+        """/ask에 pdf_hash 없이 요청 + 레지스트리에 문서 있음 → 최근 문서로 정상 응답"""
+        image_dir = tmp_path / "latesthash"
+        image_dir.mkdir()
+
+        mock_graph = MagicMock()
+        mock_graph.ainvoke = AsyncMock(return_value={
+            "final_answer": "최근 문서 답변",
+            "vision_result": None,
+            "contexts": [],
+        })
+        mock_build_graph.return_value = mock_graph
+
+        with patch("src.main.registry") as mock_registry, patch(
+            "src.main.IMAGE_DIR", tmp_path
+        ):
+            mock_registry.get_latest.return_value = {"pdf_hash": "latesthash"}
+            response = client.post("/ask", json={"question": "질문"})
+
+        assert response.status_code == 200
+        assert response.json()["answer"] == "최근 문서 답변"
+
+
+class TestDocumentsEndpoint:
+    """GET /documents 엔드포인트 테스트"""
+
+    def test_returns_empty_list_when_no_documents(self, client: TestClient) -> None:
+        """인제스트된 문서가 없으면 빈 리스트 반환"""
+        with patch("src.main.registry") as mock_registry:
+            mock_registry.list_all.return_value = []
+            response = client.get("/documents")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_returns_document_list(self, client: TestClient) -> None:
+        """인제스트된 문서 목록 반환"""
+        fake_docs = [
+            {"pdf_hash": "abc", "filename": "paper.pdf", "page_count": 10, "ingested_at": "2025-01-01T00:00:00+00:00"},
+        ]
+        with patch("src.main.registry") as mock_registry:
+            mock_registry.list_all.return_value = fake_docs
+            response = client.get("/documents")
+        assert response.status_code == 200
+        assert response.json() == fake_docs
+
+
+class TestIngestRegistryCall:
+    """POST /ingest — registry.add() 호출 검증"""
+
+    @patch("src.main.build_ingest_graph")
+    def test_registry_add_called_with_correct_args_on_new_ingest(
+        self, mock_build_graph: MagicMock, client: TestClient, tmp_path: Path
+    ) -> None:
+        """신규 인제스트 시 registry.add()가 (hash, filename, page_count)로 호출됨"""
+        result_image_dir = tmp_path / "result"
+        result_image_dir.mkdir()
+        (result_image_dir / "page_001.png").touch()
+        (result_image_dir / "page_002.png").touch()
+
+        mock_graph = MagicMock()
+        mock_graph.ainvoke = AsyncMock(return_value={"image_dir": str(result_image_dir)})
+        mock_build_graph.return_value = mock_graph
+
+        with patch("src.main.IMAGE_DIR", tmp_path), patch("src.main.PDF_DIR", tmp_path), patch(
+            "src.main.registry"
+        ) as mock_registry:
+            file_bytes = b"%PDF-1.4 new content"
+            expected_hash = hashlib.sha256(file_bytes).hexdigest()
+            client.post(
+                "/ingest",
+                files={"file": ("paper.pdf", file_bytes, "application/pdf")},
+            )
+            mock_registry.add.assert_called_once_with(expected_hash, "paper.pdf", 2)

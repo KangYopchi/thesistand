@@ -114,7 +114,7 @@ async def generate_page_images(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     images = await loop.run_in_executor(
         None,
         lambda: convert_from_path(str(pdf_path), dpi=dpi),

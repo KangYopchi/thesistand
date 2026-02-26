@@ -12,3 +12,9 @@ wheels/
 
 # environment variables
 .env
+
+# caches
+.*_cache/
+
+# claude
+.claude/

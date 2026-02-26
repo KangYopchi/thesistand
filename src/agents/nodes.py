@@ -118,6 +118,7 @@ async def local_retriever_node(state: AgentState) -> dict:
         contexts 리스트 (reducer로 합산)
     """
     question = state["question"]
+    pdf_hash = state["pdf_hash"]
     logger.info("로컬 검색 시작: %s", question)
 
     embeddings = get_embeddings()
@@ -126,6 +127,8 @@ async def local_retriever_node(state: AgentState) -> dict:
         vectorstore=vectorstore,
         embeddings=embeddings,
     )
+    # pdf_hash별로 결과를 격리: ChromaDB metadata "source" == pdf_hash 필터링
+    retriever.search_kwargs = {"filter": {"source": pdf_hash}}
 
     docs = await retriever.ainvoke(question)
 
@@ -211,7 +214,7 @@ async def vision_router_node(state: AgentState) -> dict:
 
     # ── 2단계: contexts 메타데이터 확인 (LLM 호출 없음) ───────────────
     has_visual_element = any(
-        chunk.get("element_type") in ("table", "image", "figure") for chunk in contexts
+        chunk["element_type"] in ("table", "image", "figure") for chunk in contexts
     )
     if has_visual_element:
         logger.info("비전 라우팅: 2단계 메타데이터 매칭 → NEED_VISION")
@@ -237,7 +240,7 @@ async def vision_router_node(state: AgentState) -> dict:
                 {"role": "user", "content": question},
             ],
         )
-        decision = response.choices[0].message.content.strip()  # type: ignore - NoneType Error
+        decision = (response.choices[0].message.content or "NO_VISION").strip()
     except Exception:
         logger.exception("비전 라우팅 판단 실패, 기본값 NO_VISION")
         decision = "NO_VISION"
@@ -286,7 +289,7 @@ async def vision_analyst_node(state: AgentState) -> dict:
     ref_pages = {
         chunk["page_number"]
         for chunk in contexts
-        if chunk.get("source") == "local_rag" and chunk.get("page_number")
+        if chunk["source"] == "local_rag" and chunk["page_number"]
     }
 
     if ref_pages:
@@ -356,7 +359,7 @@ async def vision_analyst_node(state: AgentState) -> dict:
                 {"role": "user", "content": content},
             ],
         )
-        analysis = response.choices[0].message.content
+        analysis = response.choices[0].message.content or "비전 분석 결과를 가져오지 못했습니다."
     except Exception:
         logger.exception("비전 분석 실패")
         analysis = "비전 분석 중 오류가 발생했습니다."
@@ -383,9 +386,10 @@ async def synthesis_node(state: AgentState) -> dict:
     context_texts = []
     for chunk in contexts:
         if chunk["source"] == "local_rag":
-            header = f"[논문 p.{chunk['page_number']}]"
+            page_num = chunk["page_number"]
+            header = f"[논문 p.{page_num}]" if page_num is not None else "[논문]"
         else:
-            header = f"[웹: {chunk.get('url', '')}]"
+            header = f"[웹: {chunk['url'] or ''}]"
         context_texts.append(f"{header}\n{chunk['content']}")
 
     context_text = (
@@ -425,7 +429,7 @@ async def synthesis_node(state: AgentState) -> dict:
                 },
             ],
         )
-        final_answer = response.choices[0].message.content
+        final_answer = response.choices[0].message.content or "답변을 생성하지 못했습니다."
     except Exception:
         logger.exception("합성 실패")
         final_answer = "답변 생성 중 오류가 발생했습니다."

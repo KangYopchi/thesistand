@@ -1,0 +1,14 @@
+[
+  {
+    "pdf_hash": "c071382684dde891f341c5b691ad04535c7f90fbe574444d198ed4cd8269ba89",
+    "filename": "paper.pdf",
+    "page_count": 1,
+    "ingested_at": "2026-02-26T11:39:58.741095+00:00"
+  },
+  {
+    "pdf_hash": "5c31be32f3cb106b26348c002e8c841ba1f62b594bf24c6700eb2e71a85f3c0f",
+    "filename": "paper.pdf",
+    "page_count": 2,
+    "ingested_at": "2026-02-26T11:39:58.743345+00:00"
+  }
+]
