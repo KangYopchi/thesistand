@@ -27,31 +27,33 @@ logger = logging.getLogger(__name__)
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 
-DATA_DIR = Path(__file__).parent.parent / "data"
-PDF_DIR = DATA_DIR / "pdfs"
-IMAGE_DIR = DATA_DIR / "images"
+DATA_DIR = Path(__file__).parent.parent / "data"  # data dir path 저장
+PDF_DIR = DATA_DIR / "pdfs"  # pdf dir path 저장
+IMAGE_DIR = DATA_DIR / "images"  # pdf 에서 추출한 image 파일을 저장할 path 저장
 
-registry = DocumentRegistry(DATA_DIR / "documents.json")
+registry = DocumentRegistry(
+    DATA_DIR / "documents.json"
+)  # 추출한 파일의 정보를 저장하는 파일 객체
 
 
 # ── Pydantic 모델 ────────────────────────────────────────────────────
 
 
 class AskRequest(BaseModel):
-    question: str
+    question: str  # User의 질문
     pdf_hash: Optional[str] = None  # None이면 가장 최근 인제스트 문서 사용
 
 
 class AskResponse(BaseModel):
-    answer: str
-    vision_result: str | None = None
+    answer: str  # AI 의 정리된 답변
+    vision_result: str | None = None  # chunking 된 그림, 표 데이터가 사용된 결과 저장
 
 
 class IngestResponse(BaseModel):
-    message: str
-    pdf_hash: str
-    status: str  # "created" | "already_exists"
-    page_count: int
+    message: str  # pdf 처리 결과 저장
+    pdf_hash: str  # 처리 된 pdf 파일 hash 데이터
+    status: str  # "created" | "already_exists" pdf 파일 생성, 또는 기존 파일 확인 여부
+    page_count: int  # 생성한 (또는 기존의 추출한) 이미지 파일 개수
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────
