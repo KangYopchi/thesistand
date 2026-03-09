@@ -16,8 +16,8 @@ class DocumentRegistry:
     """인제스트된 문서 목록을 JSON 파일로 관리하는 레지스트리"""
 
     def __init__(self, registry_path: Path) -> None:
-        self._path = registry_path
-        self._docs: list[dict] = self._load()
+        self._path = registry_path  # registry 저장 경로
+        self._docs: list[dict] = self._load()  # json 타입으로 저장한 정보 로드
 
     def _load(self) -> list[dict]:
         if self._path.exists():
@@ -28,18 +28,22 @@ class DocumentRegistry:
         return []
 
     def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(
+            parents=True, exist_ok=True
+        )  # path = DATA_DIR / "documents.json", Data 폴더 생성, 있을 경우 생략
         self._path.write_text(
             json.dumps(self._docs, ensure_ascii=False, indent=2),
             encoding="utf-8",
-        )
+        )  # "documents.json"에 json 타입으로 저장한 정보 저장
 
     def add(self, pdf_hash: str, filename: str, page_count: int) -> None:
         """문서를 레지스트리에 추가하고 파일에 저장한다.
 
         이미 존재하는 pdf_hash는 덮어쓴다.
         """
-        self._docs = [d for d in self._docs if d["pdf_hash"] != pdf_hash]
+        self._docs = [
+            d for d in self._docs if d["pdf_hash"] != pdf_hash
+        ]  # "documents.json" 파일의 내용 중 pdf_hash와 다른 내용들만 저장
         self._docs.append(
             {
                 "pdf_hash": pdf_hash,
@@ -47,8 +51,8 @@ class DocumentRegistry:
                 "page_count": page_count,
                 "ingested_at": datetime.now(timezone.utc).isoformat(),
             }
-        )
-        self._save()
+        )  # pdf의 정보룰 추가
+        self._save()  # "documents.json 파일에 작성"
         logger.info("레지스트리 등록: %s (%s)", filename, pdf_hash[:8])
 
     def get(self, pdf_hash: str) -> dict | None:
@@ -62,7 +66,9 @@ class DocumentRegistry:
         """ingested_at 기준 가장 최근 문서를 반환한다. 없으면 None."""
         if not self._docs:
             return None
-        return max(self._docs, key=lambda d: d.get("ingested_at", ""))
+        return max(
+            self._docs, key=lambda d: d.get("ingested_at", "")
+        )  # ingested_at elements를 읽어서 가장 최신의 데이터를 불러옴
 
     def list_all(self) -> list[dict]:
         """인제스트된 문서 전체 목록을 최신순으로 반환한다."""
